@@ -1,0 +1,197 @@
+---
+title: "Regression Example"
+author: "Andrea Termine"
+date: '2022-06-30'
+output:
+    html_document:
+    code_folding: hide
+    theme: spacelab
+    highlight: pygments
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r libraries, include=FALSE}
+library(tidyverse)
+library(caret)
+library(skimr)
+library(Amelia)
+library(ggsignif)
+library(patchwork)
+library(MLmetrics)
+library(GGally)
+library(glmnet)
+```
+
+```{r parameters, include=FALSE}
+parent    = getwd()
+data.path = file.path(parent, "data")
+set.seed(12345)
+```
+
+![A glance on the regression world: mtcars](docs/mtcars.jpg){width="681"}
+
+## Abstract
+
+**Background:** Motor Trend Car Road Tests dataset has been used to test the relationship between performance and automobile design. Here we will try to predict miles per gallon using the design features of the given cars. **Method:** We fitted Elastic Net with center, scaling and PCA preprocessing methods. **Results:** We obtained 0.86 explained variance.
+
+## About the data
+
+**Motor Trend Car Road Tests** (mtcars) is a standard dataset for regression. The data was extracted from the 1974 Motor Trend US magazine, and comprises fuel consumption and 10 aspects of automobile design and performance for 32 automobiles (1973--74 models).
+
+Description of variables
+
+1.  mpg: Miles/(US) gallon
+2.  cyl: Number of cylinders
+3.  disp: Displacement (cu.in.)
+4.  hp: Gross horsepower
+5.  drat: Rear axle ratio
+6.  wt: Weight (1000 lbs)
+7.  qsec: 1/4 mile time
+8.  vs: V/S
+9.  am: Transmission (0 = automatic, 1 = manual)
+10. gear: Number of forward gears
+11. carb: Number of carburetors
+
+```{r import, include=FALSE}
+cars = mtcars
+```
+
+## Exploratory Data Analysis (EDA)
+
+The first step is understanding the dataset structure. As expected, we have 11 columns and 32 rows. Our dependent variable is mpg, which is a numerical variable. Even the predictors are numerical variables, so this time we can perform regression.
+
+```{r glimpse}
+glimpse(cars)
+```
+
+Our dependent variable (DV) is the *mpg* variable, let's look at how it is composed.
+
+### Check Dependent Variable
+
+We can see that, as expected, the number of observations for each class in the dataset is 50. So we have a factor with 3 levels (setosa, versicolor, virginica) each one with 50 observations.
+
+```{r check DV}
+cars %>% 
+  ggplot() +
+  aes(x = mpg) +
+  geom_histogram()
+```
+
+Here we can see that our distribution is quite skewed, with few data points reaching extreme values. we should use a non linear model to investigate it.
+
+### Missing Value Analysis (MVA)
+
+Now we could ask ourselves if there are any missing values. The Missing Value Analysis is a fundamental step in EDA, as *NA* values must be dealt before modeling. Let's take a look.
+
+```{r MVA}
+missmap(cars)
+```
+
+No missing values were found. We can proceed with data splitting.
+
+### Data splitting
+
+We will not perform data splitting. Sample size is just to low.
+
+### Descriptive statistics
+
+Let's visualize some descriptive information about our predictors. This time we will use the summary r base function.
+
+```{r descriptives stats with tidy}
+summary(cars)
+```
+
+Let's try again with skimr:
+
+```{r descriptives stats with skim}
+cars %>%
+  skim()
+```
+
+A bit confusing again. Let's try with some data visualization tool.
+
+## Features association with DV
+
+Here we will see correlations between the dependent variable and the predictors. This method is suitable for numeric variables.
+
+```{r visualize only one feature, message=FALSE, warning=FALSE, fig.width = 8, fig.height= 8}
+ggpairs(cars)
+```
+
+Looking at this plots we can see that all the features have some potential to predict cars mpg, but they also are intercorrelated. This may be problematic as it tends to inflate our performance. Let's take a closer look:
+
+```{r intercorrelations}
+cars %>% 
+  dplyr::select(-mpg) %>% 
+  ggcorr(method = c("pairwise", "pearson"),
+         label = TRUE)
+```
+
+Ok so we need to find a way to resolve the issue. We can drop some variables, but this is a bit naive. We can use Principal Component Analysis to obtain uncorrelated components that sums up variance in our dataset.
+
+## Data preprocessing
+
+Here we use a standard preprocessing procedure called center and scale. The center method subtracts the mean of the predictor's data from the predictor values, while scale divides the values by the standard deviation.Here we will add PCA method. As you can see the new predictors are not correlated. However, we need to re add the dependent variable to the preprocessed dataset.
+
+```{r preprocessing}
+std.prep = preProcess(x      = cars,
+                      method = c("center", "scale", "pca"))
+
+cars_prep = predict(std.prep, cars)
+
+cars_prep %>% 
+  ggcorr(method = c("pairwise", "pearson"),
+         label = TRUE)
+
+cars_prep = cars_prep %>% 
+  mutate(mpg = cars$mpg)
+```
+
+
+## Model tuning
+
+Our first step is to define a Cross- Validation strategy. Here we will use a Leave one out cross-validation because this is optimal for low sample sizes.
+
+```{r define cls control}
+# TLOOCV
+reg.ctrl = trainControl(method          = "LOOCV",
+                        p               = .75,
+                        search          = "random",
+                        #returnResamp    = "final",
+                        #savePredictions = "final",
+                        allowParallel   = TRUE)
+```
+
+## Model fitting
+
+We will fit an Elastic Net algorithm, which is commonly used to avoid multicollinearity and redundant features.
+
+```{r fit a random forest, message=FALSE, warning=FALSE}
+fit = train(mpg ~ .,
+            data      = cars_prep,
+            method    = "glmnet",
+            trControl = reg.ctrl)
+
+fit$results
+```
+
+Our results says that we are able to explain 86% of the variance in the dataset. Our predictions can be wrong by 2.23 mpg per gallon, which is not that much. Let's visualize variable importance to understand how the features were treated in the regression.
+
+```{r CV on cross-validation}
+varImp(fit)[[1]] %>% 
+  as.data.frame() %>% 
+  rownames_to_column("component") %>% 
+  ggplot() +
+  aes(x = reorder(component, Overall),
+      y = Overall) +
+  geom_pointrange(aes(ymin = 0, ymax = Overall), color = "aquamarine4", size = .3) +
+  coord_flip() +
+  labs(title = "Variable Importance",
+       y  = "Standardized Variable Importance (%)",
+       x = "Component")
+```
+
+
